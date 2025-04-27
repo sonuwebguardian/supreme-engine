@@ -1,15 +1,18 @@
 #!/bin/bash
 
-# Automated Recon Framework by Sonu (Sparerows Academy)
-# Version: v0.2 (with error handling + filled placeholders)
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
 
-set -euo pipefail
+# Logging functions
+log() {
+    echo -e "${GREEN}[+] $1${NC}"
+}
 
-# === Colors for Output ===
-RED="\033[0;31m"
-GREEN="\033[0;32m"
-YELLOW="\033[1;33m"
-NC="\033[0m"
+error() {
+    echo -e "${RED}[-] $1${NC}"
+}
 
 CONFIG_FILE="config.yaml"
 
@@ -27,190 +30,132 @@ get_wordlist() {
     yq e ".wordlists.$1" "$CONFIG_FILE"
 }
 
+DOMAIN=$1
+SKIP_MODULES=("${@:2}")
 
-# === Input Validation ===
-if [ -z "${1:-}" ]; then
-    echo -e "${RED}[!] Please provide a domain. Usage: ./recon.sh target.com${NC}"
+if [ -z "$DOMAIN" ]; then
+    error "Usage: $0 <domain> [--skip module1 module2 ...]"
     exit 1
 fi
 
-DOMAIN=$1
-OUTPUT_DIR=recon-output/$DOMAIN
-mkdir -p "$OUTPUT_DIR"
-
-log() {
-    echo -e "${YELLOW}[*] $1${NC}"
+should_skip() {
+    for skip in "${SKIP_MODULES[@]}"; do
+        if [[ "$skip" == "$1" ]]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
-success() {
-    echo -e "${GREEN}[+] $1${NC}"
-}
-
-error() {
-    echo -e "${RED}[!] $1${NC}"
-}
-
-check_tool() {
-    if ! command -v "$1" &> /dev/null; then
-        error "$1 not found! Please install it first."
-        exit 1
-    fi
-}
-
-# === Check Required Tools ===
-REQUIRED_TOOLS=(subfinder assetfinder amass httpx subjack naabu nuclei ffuf gowitness waybackurls linkfinder trufflehog)
-
-for tool in "${REQUIRED_TOOLS[@]}"; do
-    check_tool "$tool"
-done
-
-# === Recon Functions ===
+OUTPUT_DIR=$(yq e ".config.output_base" "$CONFIG_FILE")/$DOMAIN
+mkdir -p "$OUTPUT_DIR/subdomains"
 
 subdomain_enum() {
-    log "Running Subdomain Enumeration"
-    mkdir -p "$OUTPUT_DIR/subdomains"
+    log "Running subdomain enumeration..."
+    if ! "$(get_tool subfinder)" -d "$DOMAIN" -o "$OUTPUT_DIR/subdomains/subfinder.txt"; then
+        error "Subfinder failed!"
+    fi
 
-    {
-        subfinder -d "$DOMAIN" -o "$OUTPUT_DIR/subdomains/subfinder.txt"
-        assetfinder --subs-only "$DOMAIN" > "$OUTPUT_DIR/subdomains/assetfinder.txt"
-        amass enum -passive -d "$DOMAIN" -o "$OUTPUT_DIR/subdomains/amass.txt"
-    } || error "Subdomain Enumeration Failed"
+    if ! "$(get_tool assetfinder)" --subs-only "$DOMAIN" > "$OUTPUT_DIR/subdomains/assetfinder.txt"; then
+        error "Assetfinder failed!"
+    fi
 
-    sort -u "$OUTPUT_DIR/subdomains/"*.txt > "$OUTPUT_DIR/subdomains/all_subdomains.txt"
-    success "Subdomain Enumeration Done"
+    if ! "$(get_tool amass)" enum -passive -d "$DOMAIN" -o "$OUTPUT_DIR/subdomains/amass.txt"; then
+        error "Amass failed!"
+    fi
+
+    sort -u "$OUTPUT_DIR"/subdomains/*.txt > "$OUTPUT_DIR/subdomains/all.txt"
+    log "Subdomain enumeration completed."
 }
 
-check_takeover() {
-    log "Checking for Subdomain Takeovers"
-    mkdir -p "$OUTPUT_DIR/takeovers"
-
-    {
-        subjack -w "$OUTPUT_DIR/subdomains/all_subdomains.txt" -t 100 -timeout 30 -ssl -c fingerprints.json -v -o "$OUTPUT_DIR/takeovers/takeovers.txt"
-    } || error "Subdomain Takeover Check Failed"
-    success "Takeover Check Complete"
+probe_alive() {
+    log "Probing for alive domains..."
+    if ! cat "$OUTPUT_DIR/subdomains/all.txt" | "$(get_tool httpx)" -silent > "$OUTPUT_DIR/alive.txt"; then
+        error "Httpx failed!"
+    fi
+    log "Alive probing completed."
 }
 
-live_hosts() {
-    log "Probing Live Hosts"
-    mkdir -p "$OUTPUT_DIR/live"
-
-    {
-        httpx -l "$OUTPUT_DIR/subdomains/all_subdomains.txt" -silent > "$OUTPUT_DIR/live/live_hosts.txt"
-    } || error "Live Host Discovery Failed"
-    success "Live Hosts Discovery Complete"
+take_screenshots() {
+    log "Taking screenshots..."
+    mkdir -p "$OUTPUT_DIR/screenshots"
+    if ! "$(get_tool gowitness)" file -f "$OUTPUT_DIR/alive.txt" -P "$OUTPUT_DIR/screenshots"; then
+        error "Gowitness failed!"
+    fi
+    log "Screenshotting completed."
 }
 
 port_scan() {
-    log "Running Port Scan"
-    mkdir -p "$OUTPUT_DIR/ports"
-
-    {
-        naabu -list "$OUTPUT_DIR/live/live_hosts.txt" -o "$OUTPUT_DIR/ports/naabu.txt"
-    } || error "Port Scan Failed"
-    success "Port Scan Complete"
+    log "Running port scan..."
+    if ! "$(get_tool naabu)" -iL "$OUTPUT_DIR/alive.txt" -o "$OUTPUT_DIR/ports.txt"; then
+        error "Naabu failed!"
+    fi
+    log "Port scanning completed."
 }
 
-screenshotting() {
-    log "Taking Screenshots"
-    mkdir -p "$OUTPUT_DIR/screenshots"
-
-    {
-        gowitness file -f "$OUTPUT_DIR/live/live_hosts.txt" -P "$OUTPUT_DIR/screenshots"
-    } || error "Screenshotting Failed"
-    success "Screenshotting Complete"
+subdomain_takeover() {
+    log "Checking for subdomain takeover..."
+    if ! "$(get_tool subjack)" -w "$OUTPUT_DIR/subdomains/all.txt" -t 100 -timeout 30 -ssl -v -c fingerprints.json -o "$OUTPUT_DIR/takeover.txt"; then
+        error "Subjack failed!"
+    fi
+    log "Subdomain takeover scan completed."
 }
 
-dir_bruteforce() {
-    log "Running Directory Bruteforce"
-    mkdir -p "$OUTPUT_DIR/dirs"
+run_nuclei() {
+    log "Running nuclei..."
+    if ! "$(get_tool nuclei)" -l "$OUTPUT_DIR/alive.txt" -t cves/ -o "$OUTPUT_DIR/nuclei.txt"; then
+        error "Nuclei scan failed!"
+    fi
+    log "Nuclei scanning completed."
+}
 
-    {
-        while IFS= read -r url; do
-            ffuf -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -u "$url/FUZZ" -of csv -o "$OUTPUT_DIR/dirs/$(echo "$url" | sed 's|https\?://||;s|/|_|g').csv"
-        done < "$OUTPUT_DIR/live/live_hosts.txt"
-    } || error "Directory Bruteforcing Failed"
-    success "Directory Bruteforce Complete"
+dir_enum() {
+    log "Running directory enumeration..."
+    wordlist=$(get_wordlist ffuf)
+    mkdir -p "$OUTPUT_DIR/dirsearch"
+    while read -r url; do
+        if ! "$(get_tool ffuf)" -w "$wordlist" -u "$url/FUZZ" -mc 200 -of csv -o "$OUTPUT_DIR/dirsearch/$(echo $url | sed 's/https\?:\/\///').csv"; then
+            error "FFUF failed on $url"
+        fi
+    done < "$OUTPUT_DIR/alive.txt"
+    log "Directory enumeration completed."
+}
+
+wayback_enum() {
+    log "Fetching Wayback URLs..."
+    if ! cat "$OUTPUT_DIR/subdomains/all.txt" | "$(get_tool waybackurls)" > "$OUTPUT_DIR/wayback.txt"; then
+        error "Waybackurls failed!"
+    fi
+    log "Wayback URLs fetched."
 }
 
 js_analysis() {
-    log "Analyzing JavaScript Files"
+    log "Analyzing JavaScript files..."
     mkdir -p "$OUTPUT_DIR/js"
-
-    {
-        getJS() {
-            for url in $(cat "$OUTPUT_DIR/live/live_hosts.txt"); do
-                jslinks=$(curl -s "$url" | grep -Eo 'src="[^"]+\.js"' | cut -d'"' -f2)
-                for js in $jslinks; do
-                    full_url="$url$js"
-                    echo "$full_url" >> "$OUTPUT_DIR/js/js_links.txt"
-                    curl -s "$full_url" -o "$OUTPUT_DIR/js/$(basename "$js")"
-                done
-            done
-        }
-        getJS
-        for jsfile in "$OUTPUT_DIR/js/"*.js; do
-            python3 linkfinder.py -i "$jsfile" -o cli >> "$OUTPUT_DIR/js/linkfinder_results.txt"
-        done
-    } || error "JavaScript Analysis Failed"
-    success "JS Analysis Done"
+    if ! python3 "$(get_tool linkfinder)" -i "$OUTPUT_DIR/wayback.txt" -o cli > "$OUTPUT_DIR/js/js_links.txt"; then
+        error "LinkFinder failed!"
+    fi
+    log "JavaScript analysis completed."
 }
 
-secret_discovery() {
-    log "Finding Secrets in JS Files"
-    mkdir -p "$OUTPUT_DIR/secrets"
-
-    {
-        trufflehog filesystem "$OUTPUT_DIR/js/" > "$OUTPUT_DIR/secrets/trufflehog.txt"
-    } || error "Secret Discovery Failed"
-    success "Secrets Discovery Complete"
+secrets_scan() {
+    log "Scanning for secrets..."
+    if ! "$(get_tool trufflehog)" filesystem "$OUTPUT_DIR" --json > "$OUTPUT_DIR/secrets.json"; then
+        error "Trufflehog scan failed!"
+    fi
+    log "Secrets scan completed."
 }
 
-wayback_and_params() {
-    log "Fetching Wayback URLs & Parameters"
-    mkdir -p "$OUTPUT_DIR/wayback"
+# Run modules conditionally
+! should_skip "subdomain_enum" && subdomain_enum
+! should_skip "probe_alive" && probe_alive
+! should_skip "screenshotting" && take_screenshots
+! should_skip "port_scan" && port_scan
+! should_skip "subdomain_takeover" && subdomain_takeover
+! should_skip "vuln_scan" && run_nuclei
+! should_skip "dir_enum" && dir_enum
+! should_skip "wayback" && wayback_enum
+! should_skip "js_analysis" && js_analysis
+! should_skip "secrets" && secrets_scan
 
-    {
-        waybackurls "$DOMAIN" > "$OUTPUT_DIR/wayback/urls.txt"
-        cat "$OUTPUT_DIR/wayback/urls.txt" | grep '?' | cut -d '?' -f2 | cut -d '=' -f1 | sort -u > "$OUTPUT_DIR/wayback/params.txt"
-    } || error "Wayback Collection Failed"
-    success "Wayback + Params Extraction Done"
-}
-
-vulnerability_scan() {
-    log "Running Nuclei Scans"
-    mkdir -p "$OUTPUT_DIR/vulns"
-
-    {
-        nuclei -l "$OUTPUT_DIR/live/live_hosts.txt" -o "$OUTPUT_DIR/vulns/nuclei.txt" -silent
-    } || error "Vulnerability Scan Failed"
-    success "Vulnerability Scanning Done"
-}
-
-extra_checks() {
-    log "Running Extra Vulnerability Checks"
-    mkdir -p "$OUTPUT_DIR/extra"
-
-    {
-        echo "Run SSRFmap, Corsy, or Autorize manually from Burp Suite extensions or CLI"
-    } || error "Extra Checks Failed"
-    success "Extra Checks Logged (Manual Recommended)"
-}
-
-# === Main Execution ===
-
-log "Starting Recon on $DOMAIN"
-
-subdomain_enum
-check_takeover
-live_hosts
-port_scan
-screenshotting
-dir_bruteforce
-js_analysis
-secret_discovery
-wayback_and_params
-vulnerability_scan
-extra_checks
-
-success "All Recon Steps Completed for $DOMAIN"
-echo -e "${GREEN}[+] Output directory: $OUTPUT_DIR${NC}"
+log "Recon completed. All data saved to $OUTPUT_DIR"
