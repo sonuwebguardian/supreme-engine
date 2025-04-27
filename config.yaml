@@ -1,19 +1,10 @@
-tools:
-  subfinder: "subfinder"
-  assetfinder: "assetfinder"
-  amass: "amass"
-  httpx: "httpx"
-  subjack: "subjack"
-  naabu: "naabu"
-  nuclei: "nuclei"
-  ffuf: "ffuf"
-  gowitness: "gowitness"
-  waybackurls: "waybackurls"
-  linkfinder: "linkfinder.py"
-  trufflehog: "trufflehog"
+# Configuration file for recon framework
 
 wordlists:
-  ffuf: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+  subdomain: "/usr/share/wordlists/all.txt"
 
-config:
-  output_base: "recon-output"
+paths:
+  subfinder: "$(which subfinder)"
+  naabu: "$(which naabu)"
+  gowitness: "$(which gowitness)"
+  waybackurls: "$(which waybackurls)"
