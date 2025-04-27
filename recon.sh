@@ -11,6 +11,23 @@ GREEN="\033[0;32m"
 YELLOW="\033[1;33m"
 NC="\033[0m"
 
+CONFIG_FILE="config.yaml"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    error "Missing config.yaml! Please create one in the script directory."
+    exit 1
+fi
+
+# Use yq to load paths from YAML
+get_tool() {
+    yq e ".tools.$1" "$CONFIG_FILE"
+}
+
+get_wordlist() {
+    yq e ".wordlists.$1" "$CONFIG_FILE"
+}
+
+
 # === Input Validation ===
 if [ -z "${1:-}" ]; then
     echo -e "${RED}[!] Please provide a domain. Usage: ./recon.sh target.com${NC}"
