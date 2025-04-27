@@ -1,0 +1,19 @@
+tools:
+  subfinder: "subfinder"
+  assetfinder: "assetfinder"
+  amass: "amass"
+  httpx: "httpx"
+  subjack: "subjack"
+  naabu: "naabu"
+  nuclei: "nuclei"
+  ffuf: "ffuf"
+  gowitness: "gowitness"
+  waybackurls: "waybackurls"
+  linkfinder: "linkfinder.py"
+  trufflehog: "trufflehog"
+
+wordlists:
+  ffuf: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+
+config:
+  output_base: "recon-output"
